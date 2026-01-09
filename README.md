@@ -1,4 +1,4 @@
-# FinBot — реферальный Telegram-бот (python-telegram-bot v20)
+# FinBot — реферальный Telegram-бот (pyTelegramBotAPI)
 
 ## Возможности
 - Регистрация пользователей через `/start`.
