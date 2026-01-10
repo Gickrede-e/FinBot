@@ -2,26 +2,27 @@
 
 ## Возможности
 - Регистрация пользователей через `/start`.
-- Учёт приглашений по deep-link формату `start=ref_{referrer_id}_{bank_key}`.
 - Кнопки для банков с реферальными URL на основе кода пользователя.
 - Админская статистика `/stats` (или `/admin_stats`).
+- Админ-панель `/admin` для редактирования приветствия и банковских ссылок.
+- Добавление и удаление банков из админ-панели.
 - SQLite хранение в одном файле.
 
 ## Требования
 - Python 3.10+
-- Переменные окружения:
+- Настройки в `.env`:
   - `TELEGRAM_TOKEN` — токен бота (не хранится в коде)
   - `DATABASE_PATH` — путь к SQLite файлу (по умолчанию `bot.sqlite3`)
-  - `ADMIN_ID` — Telegram ID администратора (для `/stats`)
+  - `ADMIN_IDS` — Telegram ID админов через запятую (например, `123,456`) для `/stats` и `/admin`
+  - `TELEGRAM_PROXY` — опционально, proxy URL для доступа к Telegram API (например, `http://user:pass@host:port`)
 
 ## Установка и запуск
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-export TELEGRAM_TOKEN="<ваш токен>"
-export DATABASE_PATH="bot.sqlite3"
-export ADMIN_ID="123456789"
+cp .env.example .env
+# затем отредактируйте .env
 python init_db.py
 python main.py
 ```
@@ -61,34 +62,29 @@ CREATE TABLE banks (
 ```
 Кодом приглашения служит Telegram ID пользователя. Это позволяет банку отследить, кто пригласил.
 
-### Deep-link для приглашений в бота
-Используйте формат:
-```
-https://t.me/<bot_username>?start=ref_{referrer_id}_{bank_key}
-```
-Пример:
-```
-https://t.me/MyFinBot?start=ref_123456789_alfa
-```
-При первом `/start` бот запишет, что пользователь пришёл по реферальной ссылке `referrer_id` и `bank_key`.
-
 ## Статистика
-- `/stats` — доступно только `ADMIN_ID`.
+- `/stats` — доступно только `ADMIN_IDS`.
 - Для CSV можно выполнить `/stats csv`.
 
-## Безопасность payload (опционально)
-Сейчас payload проверяется по формату `ref_{referrer_id}_{bank_key}`. Для защиты от подделок можно внедрить HMAC-подпись:
-```
-ref_{referrer_id}_{bank_key}_{signature}
-```
-Где `signature = HMAC(secret, f"{referrer_id}:{bank_key}")`.
-На стороне бота сверяйте подпись перед записью приглашения.
+## Админ-панель
+Команда `/admin` (доступна только `ADMIN_IDS`) открывает меню:
+- редактирование приветственного текста;
+- редактирование базовых URL реферальных ссылок банков;
+- добавление и удаление банков.
+В админ-панели доступны кнопки **Назад** и **Отмена**, чтобы прервать редактирование и вернуться к меню.
 
 ## Тестирование
-1. Эмуляция приглашения:
-   - Зайдите по ссылке `https://t.me/<bot_username>?start=ref_<your_id>_alfa`.
-2. Статистика:
+1. Статистика:
    - `/stats` или `/stats csv`.
 
 ## Где редактировать ссылки банков
-Список банков и базовые URL находятся в `models.py` в `DEFAULT_BANKS`. Замените placeholders на реальные ссылки.
+Базовые URL можно менять через `/admin`. Исходные значения находятся в `models.py` в `DEFAULT_BANKS`.
+
+## Ошибка ProxyError при polling
+Если при запуске видите ошибку вида `ProxyError` или `Remote end closed connection without response`,
+значит доступ к `api.telegram.org` блокируется прокси/фаерволом. Укажите прокси через `TELEGRAM_PROXY`:
+Отредактируйте `.env` и добавьте строку:
+```
+TELEGRAM_PROXY="http://user:pass@host:port"
+```
+После этого бот будет использовать прокси для всех запросов к Telegram API.

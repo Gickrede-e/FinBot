@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS banks (
     key TEXT PRIMARY KEY,
     base_url TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -107,6 +112,38 @@ def create_referral(
 def list_banks(conn: sqlite3.Connection) -> list[Bank]:
     rows = conn.execute("SELECT key, base_url FROM banks ORDER BY key").fetchall()
     return [Bank(key=row["key"], base_url=row["base_url"]) for row in rows]
+
+
+def add_bank(conn: sqlite3.Connection, key: str, base_url: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO banks (key, base_url) VALUES (?, ?)",
+        (key, base_url),
+    )
+
+
+def update_bank_url(conn: sqlite3.Connection, key: str, base_url: str) -> None:
+    conn.execute(
+        "UPDATE banks SET base_url = ? WHERE key = ?",
+        (base_url, key),
+    )
+
+
+def delete_bank(conn: sqlite3.Connection, key: str) -> None:
+    conn.execute("DELETE FROM banks WHERE key = ?", (key,))
+
+
+def get_setting(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return None
+    return str(row["value"])
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+        (key, value),
+    )
 
 
 def count_users(conn: sqlite3.Connection) -> int:
