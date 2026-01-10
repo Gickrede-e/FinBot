@@ -2,6 +2,7 @@ import csv
 import io
 import logging
 import os
+from urllib.parse import urlparse
 from typing import Optional
 
 import telebot
@@ -13,15 +14,22 @@ from models import (
     Bank,
     add_bank,
     count_users,
+    count_reward_requests_by_status,
+    create_reward_request,
     delete_bank,
     ensure_user,
+    get_reward_request,
     get_connection,
     get_setting,
+    has_pending_reward_request,
     init_db,
     list_banks,
+    list_reward_history,
+    list_reward_requests,
     referrals_by_bank,
     set_setting,
     top_referrers,
+    update_reward_request_status,
     update_bank_url,
 )
 
@@ -33,12 +41,59 @@ DEFAULT_WELCOME_TEXT = (
 )
 
 
-def build_bank_keyboard(banks: list[Bank], referral_code: int) -> types.InlineKeyboardMarkup:
+def normalize_bank_url(base_url: str) -> Optional[str]:
+    parsed = urlparse(base_url)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return base_url
+    candidate = f"https://{base_url}"
+    parsed_candidate = urlparse(candidate)
+    if parsed_candidate.scheme in {"http", "https"} and parsed_candidate.netloc:
+        return candidate
+    return None
+
+
+def build_bank_keyboard(
+    banks: list[Bank], referral_code: int, is_admin_user: bool
+) -> types.InlineKeyboardMarkup:
     keyboard = types.InlineKeyboardMarkup()
     for bank in banks:
-        url = f"{bank.base_url}?ref={referral_code}"
+        normalized = normalize_bank_url(bank.base_url)
+        if not normalized:
+            logger.warning("Invalid bank URL for %s: %s", bank.key, bank.base_url)
+            continue
+        url = f"{normalized}?ref={referral_code}"
         keyboard.add(types.InlineKeyboardButton(text=bank.key, url=url))
+    keyboard.add(
+        types.InlineKeyboardButton(
+            text="🎁 Отправить запрос на вознаграждение",
+            callback_data="reward_request",
+        )
+    )
+    if is_admin_user:
+        keyboard.add(
+            types.InlineKeyboardButton(text="📊 Статистика", callback_data="goto_stats"),
+            types.InlineKeyboardButton(text="🛠️ Админ-панель", callback_data="goto_admin"),
+        )
     return keyboard
+
+
+def edit_or_send(
+    bot: telebot.TeleBot,
+    message: types.Message,
+    text: str,
+    reply_markup: Optional[types.InlineKeyboardMarkup] = None,
+) -> None:
+    if message and message.chat:
+        try:
+            bot.edit_message_text(
+                text=text,
+                chat_id=message.chat.id,
+                message_id=message.message_id,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception:
+            bot.send_message(message.chat.id, text, reply_markup=reply_markup)
 
 
 def start_handler(
@@ -47,6 +102,7 @@ def start_handler(
     db_path: str,
     banks: list[Bank],
     welcome_text: str,
+    is_admin_user: bool,
 ) -> None:
     user = message.from_user
     if user is None:
@@ -61,8 +117,8 @@ def start_handler(
             user.last_name,
         )
 
-    keyboard = build_bank_keyboard(banks, referral_code=user.id)
-    bot.send_message(message.chat.id, welcome_text, reply_markup=keyboard)
+    keyboard = build_bank_keyboard(banks, referral_code=user.id, is_admin_user=is_admin_user)
+    edit_or_send(bot, message, welcome_text, reply_markup=keyboard)
 
 
 def is_admin(user_id: int, admin_ids: set[int]) -> bool:
@@ -75,13 +131,9 @@ def admin_menu_markup() -> types.InlineKeyboardMarkup:
     markup.add(types.InlineKeyboardButton(text="🏦 Редактировать банк", callback_data="admin_banks"))
     markup.add(types.InlineKeyboardButton(text="➕ Добавить банк", callback_data="admin_bank_add"))
     markup.add(types.InlineKeyboardButton(text="🗑️ Удалить банк", callback_data="admin_bank_delete"))
+    markup.add(types.InlineKeyboardButton(text="📋 Запросы на вознаграждение", callback_data="admin_reward_requests"))
+    markup.add(types.InlineKeyboardButton(text="🗂️ История вознаграждений", callback_data="admin_reward_history"))
     markup.add(types.InlineKeyboardButton(text="🏠 Вернуться в /start", callback_data="goto_start"))
-    return markup
-
-
-def admin_back_markup() -> types.InlineKeyboardMarkup:
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
     return markup
 
 
@@ -91,8 +143,30 @@ def admin_cancel_markup() -> types.InlineKeyboardMarkup:
     return markup
 
 
-def start_return_markup() -> types.InlineKeyboardMarkup:
+def reward_cancel_markup() -> types.InlineKeyboardMarkup:
     markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(text="❌ Отмена", callback_data="reward_cancel"))
+    return markup
+
+
+def build_stats_text(total_users: int, counts: dict[str, int]) -> str:
+    return (
+        "📊 Статистика\n"
+        f"👥 Пользователей: {total_users}\n"
+        f"✅ Принятых заявок: {counts.get('approved', 0)}\n"
+        f"❌ Отклонённых заявок: {counts.get('rejected', 0)}\n"
+        f"⏳ Pending заявок: {counts.get('pending', 0)}"
+    )
+
+
+def stats_menu_markup() -> types.InlineKeyboardMarkup:
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton(text="🗂️ История вознаграждений", callback_data="admin_reward_history")
+    )
+    markup.add(
+        types.InlineKeyboardButton(text="📋 Запросы на вознаграждение", callback_data="admin_reward_requests")
+    )
     markup.add(types.InlineKeyboardButton(text="🏠 Вернуться в /start", callback_data="goto_start"))
     return markup
 
@@ -102,43 +176,29 @@ def stats_handler(
     bot: telebot.TeleBot,
     db_path: str,
     admin_ids: set[int],
+    reply_markup: Optional[types.InlineKeyboardMarkup] = None,
+    user_id: Optional[int] = None,
 ) -> None:
-    user = message.from_user
-    if not user or not is_admin(user.id, admin_ids):
-        bot.send_message(message.chat.id, "🚫 Доступ запрещён.")
+    resolved_user_id = user_id or (message.from_user.id if message.from_user else None)
+    if not resolved_user_id or not is_admin(resolved_user_id, admin_ids):
+        edit_or_send(bot, message, "🚫 Доступ запрещён.")
         return
 
     with get_connection(db_path) as conn:
         total_users = count_users(conn)
-        top = top_referrers(conn)
-        by_bank = referrals_by_bank(conn)
+        counts = count_reward_requests_by_status(conn)
 
-    lines = [f"👥 Всего пользователей: {total_users}", "", "🏆 Топ-10 по приглашениям:"]
-    if top:
-        for row in top:
-            name = row["username"] or row["first_name"] or str(row["tg_id"])
-            lines.append(f"• {name}: {row['cnt']}")
-    else:
-        lines.append("• пока нет данных")
-
-    lines.append("")
-    lines.append("🏦 Приглашения по банкам:")
-    if by_bank:
-        for row in by_bank:
-            lines.append(f"• {row['bank_key']}: {row['cnt']}")
-    else:
-        lines.append("• пока нет данных")
-
-    bot.send_message(message.chat.id, "\n".join(lines))
+    text = build_stats_text(total_users, counts)
+    edit_or_send(bot, message, text, reply_markup=reply_markup or stats_menu_markup())
 
     if message.text and message.text.lower().strip().endswith("csv"):
         buffer = io.StringIO()
         writer = csv.writer(buffer)
-        writer.writerow(["type", "key", "count"])
-        for row in top:
-            writer.writerow(["top_referrer", row["tg_id"], row["cnt"]])
-        for row in by_bank:
-            writer.writerow(["bank", row["bank_key"], row["cnt"]])
+        writer.writerow(["metric", "count"])
+        writer.writerow(["users", total_users])
+        writer.writerow(["approved", counts.get("approved", 0)])
+        writer.writerow(["rejected", counts.get("rejected", 0)])
+        writer.writerow(["pending", counts.get("pending", 0)])
         buffer.seek(0)
         bot.send_document(
             message.chat.id,
@@ -187,12 +247,22 @@ def main() -> None:
     bot = telebot.TeleBot(token)
     bot.set_my_commands([types.BotCommand("start", "🚀 Запуск и меню")])
 
+    admin_menu = admin_menu_markup()
+    admin_cancel = admin_cancel_markup()
+    reward_cancel = reward_cancel_markup()
+
     @bot.message_handler(commands=["start"])
     def start_command(message: types.Message) -> None:
-        start_handler(message, bot, db_path, banks, welcome_text)
+        is_admin_user = message.from_user is not None and is_admin(
+            message.from_user.id, admin_ids
+        )
+        start_handler(message, bot, db_path, banks, welcome_text, is_admin_user)
 
-    def send_admin_panel(chat_id: int) -> None:
-        bot.send_message(chat_id, "🛠️ Админ-панель:", reply_markup=admin_menu_markup())
+    def send_admin_panel(chat_id: int, message: Optional[types.Message] = None) -> None:
+        if message:
+            edit_or_send(bot, message, "🛠️ Админ-панель:", reply_markup=admin_menu)
+            return
+        bot.send_message(chat_id, "🛠️ Админ-панель:", reply_markup=admin_menu)
 
     @bot.message_handler(commands=["admin"])
     def admin_command(message: types.Message) -> None:
@@ -209,7 +279,7 @@ def main() -> None:
             bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
             return
         bot.answer_callback_query(call.id)
-        send_admin_panel(call.message.chat.id)
+        send_admin_panel(call.message.chat.id, call.message)
 
     @bot.callback_query_handler(func=lambda call: call.data == "admin_welcome")
     def admin_welcome_callback(call: types.CallbackQuery) -> None:
@@ -221,7 +291,7 @@ def main() -> None:
         msg = bot.send_message(
             call.message.chat.id,
             "✍️ Отправьте новый текст приветствия:",
-            reply_markup=admin_cancel_markup(),
+            reply_markup=admin_cancel,
         )
         bot.register_next_step_handler(msg, handle_welcome_update)
 
@@ -256,7 +326,7 @@ def main() -> None:
                 )
             )
         markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
-        bot.send_message(call.message.chat.id, "🏦 Выберите банк для редактирования:", reply_markup=markup)
+        edit_or_send(bot, call.message, "🏦 Выберите банк для редактирования:", reply_markup=markup)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("bank_edit:"))
     def admin_bank_edit_callback(call: types.CallbackQuery) -> None:
@@ -269,7 +339,7 @@ def main() -> None:
         msg = bot.send_message(
             call.message.chat.id,
             f"🔗 Введите новый base_url для банка {bank_key}:",
-            reply_markup=admin_cancel_markup(),
+            reply_markup=admin_cancel,
         )
         bot.register_next_step_handler(msg, handle_bank_update, bank_key)
 
@@ -282,6 +352,9 @@ def main() -> None:
         new_url = (message.text or "").strip()
         if not new_url:
             bot.send_message(message.chat.id, "⚠️ URL не может быть пустым.")
+            return
+        if not normalize_bank_url(new_url):
+            bot.send_message(message.chat.id, "⚠️ URL должен быть валидным (http/https).")
             return
         with get_connection(db_path) as conn:
             update_bank_url(conn, bank_key, new_url)
@@ -298,7 +371,7 @@ def main() -> None:
         msg = bot.send_message(
             call.message.chat.id,
             "➕ Отправьте новый банк в формате `key base_url`:",
-            reply_markup=admin_cancel_markup(),
+            reply_markup=admin_cancel,
             parse_mode="Markdown",
         )
         bot.register_next_step_handler(msg, handle_bank_add)
@@ -314,10 +387,17 @@ def main() -> None:
             bot.send_message(message.chat.id, "⚠️ Формат: `key base_url`.", parse_mode="Markdown")
             return
         key, base_url = text.split(maxsplit=1)
+        if not normalize_bank_url(base_url):
+            bot.send_message(message.chat.id, "⚠️ URL должен быть валидным (http/https).")
+            return
         with get_connection(db_path) as conn:
-            add_bank(conn, key, base_url)
-            banks = list_banks(conn)
-        bot.send_message(message.chat.id, f"✅ Банк {key} добавлен.")
+            added = add_bank(conn, key, base_url)
+            if added:
+                banks = list_banks(conn)
+        if added:
+            bot.send_message(message.chat.id, f"✅ Банк {key} добавлен.")
+        else:
+            bot.send_message(message.chat.id, f"⚠️ Банк с ключом {key} уже существует.")
 
     @bot.callback_query_handler(func=lambda call: call.data == "admin_bank_delete")
     def admin_bank_delete_callback(call: types.CallbackQuery) -> None:
@@ -335,7 +415,140 @@ def main() -> None:
                 )
             )
         markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
-        bot.send_message(call.message.chat.id, "🗑️ Выберите банк для удаления:", reply_markup=markup)
+        edit_or_send(bot, call.message, "🗑️ Выберите банк для удаления:", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_reward_requests")
+    def admin_reward_requests_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        with get_connection(db_path) as conn:
+            rows = list_reward_requests(conn)
+        if not rows:
+            back_markup = types.InlineKeyboardMarkup()
+            back_markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
+            edit_or_send(bot, call.message, "📭 Запросов пока нет.", reply_markup=back_markup)
+            return
+        markup = types.InlineKeyboardMarkup()
+        for row in rows:
+            display_name = " ".join(
+                part for part in [row["tg_first_name"], row["tg_last_name"]] if part
+            ) or str(row["tg_id"])
+            label = f"#{row['id']} • {display_name} • {row['status']}"
+            markup.add(
+                types.InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"reward_view:{row['id']}",
+                )
+            )
+        markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
+        edit_or_send(bot, call.message, "📋 Запросы на вознаграждение:", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_reward_history")
+    def admin_reward_history_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        with get_connection(db_path) as conn:
+            rows = list_reward_history(conn)
+        if not rows:
+            back_markup = types.InlineKeyboardMarkup()
+            back_markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
+            edit_or_send(bot, call.message, "📭 История пока пуста.", reply_markup=back_markup)
+            return
+        markup = types.InlineKeyboardMarkup()
+        for row in rows:
+            display_name = " ".join(
+                part for part in [row["tg_first_name"], row["tg_last_name"]] if part
+            ) or str(row["tg_id"])
+            label = f"#{row['id']} • {display_name} • {row['status']}"
+            markup.add(
+                types.InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"reward_view:{row['id']}",
+                )
+            )
+        markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
+        edit_or_send(bot, call.message, "🗂️ История вознаграждений:", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("reward_view:"))
+    def reward_view_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        request_id = int(call.data.split(":", 1)[1])
+        with get_connection(db_path) as conn:
+            row = get_reward_request(conn, request_id)
+        if not row:
+            bot.send_message(call.message.chat.id, "⚠️ Запрос не найден.")
+            return
+        display_name = " ".join(
+            part for part in [row["tg_first_name"], row["tg_last_name"]] if part
+        ) or str(row["tg_id"])
+        username_line = f"• Username: @{row['username']}" if row["username"] else "• Username: —"
+        message = (
+            "🎁 Запрос на вознаграждение\n"
+            f"• Request ID: {row['id']}\n"
+            f"• TG ID: {row['tg_id']}\n"
+            f"• Display: {display_name}\n"
+            f"{username_line}\n"
+            f"• Банк: {row['bank_key']}\n"
+            f"• Телефон: {row['phone']}\n"
+            f"• Имя: {row['first_name']}\n"
+            f"• Фамилия: {row['last_name']}\n"
+            f"• Статус: {row['status']}\n"
+            f"• Создан: {row['created_at']}"
+        )
+        action_markup = types.InlineKeyboardMarkup()
+        if row["status"] == "pending":
+            action_markup.add(
+                types.InlineKeyboardButton(
+                    text="✅ Принять", callback_data=f"reward_set:{row['id']}:approved"
+                ),
+                types.InlineKeyboardButton(
+                    text="❌ Отклонить", callback_data=f"reward_set:{row['id']}:rejected"
+                ),
+            )
+            action_markup.add(
+                types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_reward_requests")
+            )
+        else:
+            action_markup.add(
+                types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_reward_history")
+            )
+        edit_or_send(bot, call.message, message, reply_markup=action_markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("reward_set:"))
+    def reward_set_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        _, request_id, status = call.data.split(":", 2)
+        with get_connection(db_path) as conn:
+            request_row = get_reward_request(conn, int(request_id))
+            update_reward_request_status(conn, int(request_id), status)
+        status_label = "принят" if status == "approved" else "отклонён"
+        edit_or_send(
+            bot,
+            call.message,
+            f"✅ Статус запроса {request_id}: {status_label}.",
+            reply_markup=stats_menu_markup(),
+        )
+        if request_row:
+            user_message = (
+                "✅ Ваш запрос на вознаграждение принят."
+                if status == "approved"
+                else "❌ Ваш запрос на вознаграждение отклонён."
+            )
+            bot.send_message(request_row["tg_id"], user_message)
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("bank_delete:"))
     def admin_bank_delete_confirm(call: types.CallbackQuery) -> None:
@@ -354,7 +567,139 @@ def main() -> None:
     @bot.message_handler(commands=["stats", "admin_stats"])
     def stats_command(message: types.Message) -> None:
         stats_handler(message, bot, db_path, admin_ids)
-        bot.send_message(message.chat.id, "📍 Действия:", reply_markup=start_return_markup())
+
+    @bot.callback_query_handler(func=lambda call: call.data == "reward_request")
+    def reward_request_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user:
+            return
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
+        with get_connection(db_path) as conn:
+            user_id = ensure_user(
+                conn,
+                user.id,
+                user.username,
+                user.first_name,
+                user.last_name,
+            )
+            if has_pending_reward_request(conn, user_id):
+                bot.send_message(
+                    call.message.chat.id,
+                    "⏳ У вас уже есть запрос в обработке.",
+                )
+                return
+        markup = types.InlineKeyboardMarkup()
+        for bank in banks:
+            markup.add(
+                types.InlineKeyboardButton(
+                    text=f"🏦 {bank.key}",
+                    callback_data=f"reward_bank:{bank.key}",
+                )
+            )
+        markup.add(types.InlineKeyboardButton(text="❌ Отмена", callback_data="reward_cancel"))
+        edit_or_send(
+            bot,
+            call.message,
+            "🏦 Выберите банк для запроса вознаграждения:",
+            reply_markup=markup,
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("reward_bank:"))
+    def reward_bank_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user:
+            return
+        bot.answer_callback_query(call.id)
+        bank_key = call.data.split(":", 1)[1]
+        msg = bot.send_message(
+            call.message.chat.id,
+            "📱 Укажите номер телефона (например, +79991234567):",
+            reply_markup=reward_cancel,
+        )
+        bot.register_next_step_handler(msg, handle_reward_phone, bank_key)
+
+    def handle_reward_phone(message: types.Message, bank_key: str) -> None:
+        user = message.from_user
+        if not user:
+            return
+        phone = (message.text or "").strip()
+        if not phone.startswith("+") or len(phone) < 10:
+            msg = bot.send_message(
+                message.chat.id,
+                "⚠️ Укажите телефон в формате +79991234567.",
+                reply_markup=reward_cancel,
+            )
+            bot.clear_step_handler_by_chat_id(message.chat.id)
+            bot.register_next_step_handler(msg, handle_reward_phone, bank_key)
+            return
+        msg = bot.send_message(message.chat.id, "🧑 Укажите имя:", reply_markup=reward_cancel)
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        bot.register_next_step_handler(msg, handle_reward_first_name, bank_key, phone)
+
+    def handle_reward_first_name(message: types.Message, bank_key: str, phone: str) -> None:
+        user = message.from_user
+        if not user:
+            return
+        first_name = (message.text or "").strip()
+        if not first_name:
+            msg = bot.send_message(
+                message.chat.id,
+                "⚠️ Имя не может быть пустым.",
+                reply_markup=reward_cancel,
+            )
+            bot.clear_step_handler_by_chat_id(message.chat.id)
+            bot.register_next_step_handler(msg, handle_reward_first_name, bank_key, phone)
+            return
+        msg = bot.send_message(message.chat.id, "🧾 Укажите фамилию:", reply_markup=reward_cancel)
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        bot.register_next_step_handler(msg, handle_reward_last_name, bank_key, phone, first_name)
+
+    def handle_reward_last_name(message: types.Message, bank_key: str, phone: str, first_name: str) -> None:
+        user = message.from_user
+        if not user:
+            return
+        last_name = (message.text or "").strip()
+        if not last_name:
+            msg = bot.send_message(
+                message.chat.id,
+                "⚠️ Фамилия не может быть пустой.",
+                reply_markup=reward_cancel,
+            )
+            bot.clear_step_handler_by_chat_id(message.chat.id)
+            bot.register_next_step_handler(
+                msg, handle_reward_last_name, bank_key, phone, first_name
+            )
+            return
+        with get_connection(db_path) as conn:
+            user_id = ensure_user(
+                conn,
+                user.id,
+                user.username,
+                user.first_name,
+                user.last_name,
+            )
+            if has_pending_reward_request(conn, user_id):
+                bot.send_message(message.chat.id, "⏳ У вас уже есть запрос в обработке.")
+                return
+            create_reward_request(conn, user_id, bank_key, phone, first_name, last_name)
+        edit_or_send(bot, message, "✅ Запрос отправлен. Мы свяжемся с вами.")
+        is_admin_user = message.from_user is not None and is_admin(
+            message.from_user.id, admin_ids
+        )
+        start_handler(message, bot, db_path, banks, welcome_text, is_admin_user)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "reward_cancel")
+    def reward_cancel_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user:
+            return
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
+        is_admin_user = call.from_user is not None and is_admin(
+            call.from_user.id, admin_ids
+        )
+        start_handler(call.message, bot, db_path, banks, welcome_text, is_admin_user)
 
     @bot.callback_query_handler(func=lambda call: call.data == "goto_start")
     def goto_start_callback(call: types.CallbackQuery) -> None:
@@ -362,7 +707,34 @@ def main() -> None:
         if not user:
             return
         bot.answer_callback_query(call.id)
-        start_handler(call.message, bot, db_path, banks, welcome_text)
+        is_admin_user = call.from_user is not None and is_admin(
+            call.from_user.id, admin_ids
+        )
+        start_handler(call.message, bot, db_path, banks, welcome_text, is_admin_user)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "goto_admin")
+    def goto_admin_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        send_admin_panel(call.message.chat.id, call.message)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "goto_stats")
+    def goto_stats_callback(call: types.CallbackQuery) -> None:
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        stats_handler(
+            call.message,
+            bot,
+            db_path,
+            admin_ids,
+            user_id=user.id,
+        )
 
     logger.info("🤖 Bot started with polling")
     bot.infinity_polling()

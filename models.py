@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS reward_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    bank_key TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
 """
 
 
@@ -114,11 +126,15 @@ def list_banks(conn: sqlite3.Connection) -> list[Bank]:
     return [Bank(key=row["key"], base_url=row["base_url"]) for row in rows]
 
 
-def add_bank(conn: sqlite3.Connection, key: str, base_url: str) -> None:
+def add_bank(conn: sqlite3.Connection, key: str, base_url: str) -> bool:
+    row = conn.execute("SELECT 1 FROM banks WHERE key = ?", (key,)).fetchone()
+    if row:
+        return False
     conn.execute(
-        "INSERT OR REPLACE INTO banks (key, base_url) VALUES (?, ?)",
+        "INSERT INTO banks (key, base_url) VALUES (?, ?)",
         (key, base_url),
     )
+    return True
 
 
 def update_bank_url(conn: sqlite3.Connection, key: str, base_url: str) -> None:
@@ -146,9 +162,125 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def has_pending_reward_request(conn: sqlite3.Connection, user_id: int) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM reward_requests WHERE user_id = ? AND status = ?",
+        (user_id, "pending"),
+    ).fetchone()
+    return row is not None
+
+
+def create_reward_request(
+    conn: sqlite3.Connection,
+    user_id: int,
+    bank_key: str,
+    phone: str,
+    first_name: str,
+    last_name: str,
+) -> None:
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        "INSERT INTO reward_requests (user_id, bank_key, phone, first_name, last_name, status, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user_id, bank_key, phone, first_name, last_name, "pending", now),
+    )
+
+
+def list_reward_requests(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT rr.id,
+               rr.user_id,
+               rr.bank_key,
+               rr.phone,
+               rr.first_name,
+               rr.last_name,
+               rr.status,
+               rr.created_at,
+               u.tg_id,
+               u.username,
+               u.first_name AS tg_first_name,
+               u.last_name AS tg_last_name
+        FROM reward_requests rr
+        JOIN users u ON u.id = rr.user_id
+        WHERE rr.status = 'pending'
+        ORDER BY rr.created_at DESC
+        """
+    ).fetchall()
+
+
+def list_reward_history(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT rr.id,
+               rr.user_id,
+               rr.bank_key,
+               rr.phone,
+               rr.first_name,
+               rr.last_name,
+               rr.status,
+               rr.created_at,
+               u.tg_id,
+               u.username,
+               u.first_name AS tg_first_name,
+               u.last_name AS tg_last_name
+        FROM reward_requests rr
+        JOIN users u ON u.id = rr.user_id
+        WHERE rr.status IN ('approved', 'rejected')
+        ORDER BY rr.created_at DESC
+        """
+    ).fetchall()
+
+
+def get_reward_request(conn: sqlite3.Connection, request_id: int) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT rr.id,
+               rr.user_id,
+               rr.bank_key,
+               rr.phone,
+               rr.first_name,
+               rr.last_name,
+               rr.status,
+               rr.created_at,
+               u.tg_id,
+               u.username,
+               u.first_name AS tg_first_name,
+               u.last_name AS tg_last_name
+        FROM reward_requests rr
+        JOIN users u ON u.id = rr.user_id
+        WHERE rr.id = ?
+        """,
+        (request_id,),
+    ).fetchone()
+
+
+def update_reward_request_status(
+    conn: sqlite3.Connection, request_id: int, status: str
+) -> None:
+    conn.execute(
+        "UPDATE reward_requests SET status = ? WHERE id = ?",
+        (status, request_id),
+    )
+
+
 def count_users(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()
     return int(row["cnt"])
+
+
+def count_reward_requests_by_status(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT status, COUNT(*) AS cnt
+        FROM reward_requests
+        GROUP BY status
+        """
+    ).fetchall()
+    counts = {"pending": 0, "approved": 0, "rejected": 0}
+    for row in rows:
+        counts[row["status"]] = int(row["cnt"])
+    return counts
 
 
 def top_referrers(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
