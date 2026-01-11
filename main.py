@@ -17,6 +17,7 @@ from models import (
     count_reward_requests_by_status,
     create_reward_request,
     delete_bank,
+    delete_all_banks,
     ensure_user,
     get_reward_request,
     get_connection,
@@ -144,6 +145,7 @@ def admin_menu_markup() -> types.InlineKeyboardMarkup:
     markup.add(types.InlineKeyboardButton(text="🏦 Редактировать банк", callback_data="admin_banks"))
     markup.add(types.InlineKeyboardButton(text="➕ Добавить банк", callback_data="admin_bank_add"))
     markup.add(types.InlineKeyboardButton(text="🗑️ Удалить банк", callback_data="admin_bank_delete"))
+    markup.add(types.InlineKeyboardButton(text="🧹 Удалить все банки", callback_data="admin_bank_delete_all"))
     markup.add(types.InlineKeyboardButton(text="📋 Запросы на вознаграждение", callback_data="admin_reward_requests"))
     markup.add(types.InlineKeyboardButton(text="🗂️ История вознаграждений", callback_data="admin_reward_history"))
     markup.add(types.InlineKeyboardButton(text="🏠 Вернуться в /start", callback_data="goto_start"))
@@ -475,6 +477,19 @@ def main() -> None:
             )
         markup.add(types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back"))
         edit_or_send(bot, call.message, "🗑️ Выберите банк для удаления:", reply_markup=markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_bank_delete_all")
+    def admin_bank_delete_all_callback(call: types.CallbackQuery) -> None:
+        nonlocal banks
+        user = call.from_user
+        if not user or not is_admin(user.id, admin_ids):
+            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            return
+        bot.answer_callback_query(call.id)
+        with get_connection(db_path) as conn:
+            delete_all_banks(conn)
+            banks = list_banks(conn)
+        bot.send_message(call.message.chat.id, "✅ Все банки удалены.")
 
     @bot.callback_query_handler(func=lambda call: call.data == "admin_reward_requests")
     def admin_reward_requests_callback(call: types.CallbackQuery) -> None:
