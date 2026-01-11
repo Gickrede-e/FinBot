@@ -148,6 +148,10 @@ def delete_bank(conn: sqlite3.Connection, key: str) -> None:
     conn.execute("DELETE FROM banks WHERE key = ?", (key,))
 
 
+def delete_all_banks(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM banks")
+
+
 def get_setting(conn: sqlite3.Connection, key: str) -> Optional[str]:
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     if not row:
