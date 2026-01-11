@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  finbot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/bot.sqlite3
+    volumes:
+      - finbot-data:/data:rw
+    command: >
+      sh -c "python init_db.py && python main.py"
+
+volumes:
+  finbot-data:
