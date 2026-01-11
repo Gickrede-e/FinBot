@@ -279,6 +279,7 @@ def main() -> None:
             bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
             return
         bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(call.message.chat.id)
         send_admin_panel(call.message.chat.id, call.message)
 
     @bot.callback_query_handler(func=lambda call: call.data == "admin_welcome")
@@ -370,7 +371,7 @@ def main() -> None:
         bot.answer_callback_query(call.id)
         msg = bot.send_message(
             call.message.chat.id,
-            "➕ Отправьте новый банк в формате `key base_url`:",
+            "➕ Отправьте новый банк в формате `название base_url`:",
             reply_markup=admin_cancel,
             parse_mode="Markdown",
         )
@@ -384,9 +385,21 @@ def main() -> None:
             return
         text = (message.text or "").strip()
         if not text or " " not in text:
-            bot.send_message(message.chat.id, "⚠️ Формат: `key base_url`.", parse_mode="Markdown")
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Формат: `название base_url`.",
+                parse_mode="Markdown",
+            )
             return
-        key, base_url = text.split(maxsplit=1)
+        key, base_url = text.rsplit(maxsplit=1)
+        key = key.strip()
+        if not key:
+            bot.send_message(
+                message.chat.id,
+                "⚠️ Формат: `название base_url`.",
+                parse_mode="Markdown",
+            )
+            return
         if not normalize_bank_url(base_url):
             bot.send_message(message.chat.id, "⚠️ URL должен быть валидным (http/https).")
             return
