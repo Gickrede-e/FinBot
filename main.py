@@ -68,7 +68,7 @@ def build_bank_keyboard(
         if not normalized:
             logger.warning("Invalid bank URL for %s: %s", bank.key, bank.base_url)
             continue
-        url = f"{normalized}?ref={referral_code}"
+        url = normalized
         keyboard.add(types.InlineKeyboardButton(text=bank.key, url=url))
     keyboard.add(
         types.InlineKeyboardButton(
