@@ -28,56 +28,8 @@ python init_db.py
 python main.py
 ```
 
-## Схема БД (SQLite)
-```sql
-CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tg_id INTEGER UNIQUE NOT NULL,
-    username TEXT,
-    first_name TEXT,
-    last_name TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE referrals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    referrer_id INTEGER NOT NULL,
-    referred_id INTEGER UNIQUE NOT NULL,
-    bank_key TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(referrer_id) REFERENCES users(id),
-    FOREIGN KEY(referred_id) REFERENCES users(id)
-);
-
-CREATE TABLE banks (
-    key TEXT PRIMARY KEY,
-    base_url TEXT NOT NULL
-);
-
-CREATE TABLE reward_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    bank_key TEXT NOT NULL,
-    phone TEXT NOT NULL,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-);
-```
-
-## Как работают реферальные ссылки
-### Внешние банковские ссылки
-Каждому пользователю показываются кнопки вида:
-```
-{bank_base_url}?ref={telegram_id}
-```
-Кодом приглашения служит Telegram ID пользователя. Это позволяет банку отследить, кто пригласил.
-
 ## Статистика
 - `/stats` — доступно только `ADMIN_IDS`.
-- Для CSV можно выполнить `/stats csv`.
 
 ## Админ-панель
 Команда `/admin` (доступна только `ADMIN_IDS`) открывает меню:

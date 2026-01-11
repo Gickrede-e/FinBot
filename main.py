@@ -70,6 +70,7 @@ def build_bank_keyboard(
             continue
         url = normalized
         keyboard.add(types.InlineKeyboardButton(text=bank.key, url=url))
+    keyboard.add(types.InlineKeyboardButton(text="🧾 Схема выплат", callback_data="payout_scheme"))
     keyboard.add(
         types.InlineKeyboardButton(
             text="🎁 Отправить запрос на вознаграждение",
@@ -107,6 +108,13 @@ def edit_or_send(
             return
         except Exception:
             bot.send_message(message.chat.id, text, reply_markup=reply_markup)
+
+
+def answer_callback(bot: telebot.TeleBot, call: types.CallbackQuery, text: Optional[str] = None) -> None:
+    try:
+        bot.answer_callback_query(call.id, text=text)
+    except Exception:
+        logger.warning("Failed to answer callback query", exc_info=True)
 
 
 def start_handler(
@@ -233,13 +241,26 @@ def configure_proxy() -> None:
         logger.info("Using TELEGRAM_PROXY for Telegram API requests")
 
 
+def resolve_db_path() -> str:
+    env_path = os.environ.get("DATABASE_PATH")
+    if env_path:
+        return env_path
+    data_dir = "/data"
+    if os.path.isdir(data_dir) and os.access(data_dir, os.W_OK):
+        return os.path.join(data_dir, "bot.sqlite3")
+    return "bot.sqlite3"
+
+
 def main() -> None:
     load_dotenv()
     token = os.environ.get("TELEGRAM_TOKEN")
     if not token:
         raise RuntimeError("❗ TELEGRAM_TOKEN is not set in .env")
 
-    db_path = os.environ.get("DATABASE_PATH", "bot.sqlite3")
+    db_path = resolve_db_path()
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     init_db(db_path, DEFAULT_BANKS)
 
     admin_ids_raw = os.environ.get("ADMIN_IDS", "")
@@ -296,7 +317,7 @@ def main() -> None:
     def admin_back_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
         bot.answer_callback_query(call.id)
         bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -306,9 +327,9 @@ def main() -> None:
     def admin_welcome_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         msg = bot.send_message(
             call.message.chat.id,
             "✍️ Отправьте новый текст приветствия:",
@@ -364,9 +385,9 @@ def main() -> None:
     def admin_banks_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         markup = types.InlineKeyboardMarkup()
         for bank in banks:
             markup.add(
@@ -382,9 +403,9 @@ def main() -> None:
     def admin_bank_edit_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         bank_key = call.data.split(":", 1)[1]
         msg = bot.send_message(
             call.message.chat.id,
@@ -415,9 +436,9 @@ def main() -> None:
     def admin_bank_add_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         msg = bot.send_message(
             call.message.chat.id,
             "➕ Отправьте новый банк в формате `key | base_url`:",
@@ -464,9 +485,9 @@ def main() -> None:
     def admin_bank_delete_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         markup = types.InlineKeyboardMarkup()
         for bank in banks:
             markup.add(
@@ -495,9 +516,9 @@ def main() -> None:
     def admin_reward_requests_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         with get_connection(db_path) as conn:
             rows = list_reward_requests(conn)
         if not rows:
@@ -524,9 +545,9 @@ def main() -> None:
     def admin_reward_history_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         with get_connection(db_path) as conn:
             rows = list_reward_history(conn)
         if not rows:
@@ -553,9 +574,9 @@ def main() -> None:
     def reward_view_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         request_id = int(call.data.split(":", 1)[1])
         with get_connection(db_path) as conn:
             row = get_reward_request(conn, request_id)
@@ -602,9 +623,9 @@ def main() -> None:
     def reward_set_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         _, request_id, status = call.data.split(":", 2)
         with get_connection(db_path) as conn:
             request_row = get_reward_request(conn, int(request_id))
@@ -629,9 +650,9 @@ def main() -> None:
         nonlocal banks
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         bank_key = call.data.split(":", 1)[1]
         with get_connection(db_path) as conn:
             delete_bank(conn, bank_key)
@@ -647,7 +668,7 @@ def main() -> None:
         user = call.from_user
         if not user:
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         bot.clear_step_handler_by_chat_id(call.message.chat.id)
         with get_connection(db_path) as conn:
             user_id = ensure_user(
@@ -694,7 +715,7 @@ def main() -> None:
         user = call.from_user
         if not user:
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         bank_key = call.data.split(":", 1)[1]
         msg = bot.send_message(
             call.message.chat.id,
@@ -778,7 +799,7 @@ def main() -> None:
         user = call.from_user
         if not user:
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         bot.clear_step_handler_by_chat_id(call.message.chat.id)
         is_admin_user = call.from_user is not None and is_admin(
             call.from_user.id, admin_ids
@@ -790,7 +811,7 @@ def main() -> None:
         user = call.from_user
         if not user:
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         is_admin_user = call.from_user is not None and is_admin(
             call.from_user.id, admin_ids
         )
@@ -800,18 +821,18 @@ def main() -> None:
     def goto_admin_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         send_admin_panel(call.message.chat.id, call.message)
 
     @bot.callback_query_handler(func=lambda call: call.data == "goto_stats")
     def goto_stats_callback(call: types.CallbackQuery) -> None:
         user = call.from_user
         if not user or not is_admin(user.id, admin_ids):
-            bot.answer_callback_query(call.id, "🚫 Доступ запрещён.")
+            answer_callback(bot, call, "🚫 Доступ запрещён.")
             return
-        bot.answer_callback_query(call.id)
+        answer_callback(bot, call)
         stats_handler(
             call.message,
             bot,
