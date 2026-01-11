@@ -10,11 +10,7 @@ class Bank:
     base_url: str
 
 
-DEFAULT_BANKS = [
-    Bank(key="alfa", base_url="https://example.com/alfa"),
-    Bank(key="tbank", base_url="https://example.com/tbank"),
-    Bank(key="gazprom", base_url="https://example.com/gazprom"),
-]
+DEFAULT_BANKS = []
 
 
 SCHEMA = """
