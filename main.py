@@ -238,7 +238,10 @@ def main() -> None:
     if not token:
         raise RuntimeError("❗ TELEGRAM_TOKEN is not set in .env")
 
-    db_path = os.environ.get("DATABASE_PATH", "bot.sqlite3")
+    db_path = resolve_db_path()
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     init_db(db_path, DEFAULT_BANKS)
 
     admin_ids_raw = os.environ.get("ADMIN_IDS", "")
