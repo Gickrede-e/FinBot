@@ -371,7 +371,7 @@ def main() -> None:
         bot.answer_callback_query(call.id)
         msg = bot.send_message(
             call.message.chat.id,
-            "➕ Отправьте новый банк в формате `название base_url`:",
+            "➕ Отправьте новый банк в формате `key | base_url`:",
             reply_markup=admin_cancel,
             parse_mode="Markdown",
         )
@@ -384,19 +384,18 @@ def main() -> None:
             bot.send_message(message.chat.id, "🚫 Доступ запрещён.")
             return
         text = (message.text or "").strip()
-        if not text or " " not in text:
+        if not text or "|" not in text:
             bot.send_message(
                 message.chat.id,
-                "⚠️ Формат: `название base_url`.",
+                "⚠️ Формат: `key | base_url`.",
                 parse_mode="Markdown",
             )
             return
-        key, base_url = text.rsplit(maxsplit=1)
-        key = key.strip()
-        if not key:
+        key, base_url = (part.strip() for part in text.split("|", maxsplit=1))
+        if not key or not base_url:
             bot.send_message(
                 message.chat.id,
-                "⚠️ Формат: `название base_url`.",
+                "⚠️ Формат: `key | base_url`.",
                 parse_mode="Markdown",
             )
             return
