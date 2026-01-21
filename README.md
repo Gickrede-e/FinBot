@@ -27,3 +27,6 @@
 TELEGRAM_PROXY="http://user:pass@host:port"
 ```
 После этого бот будет использовать прокси для всех запросов к Telegram API.
+
+
+Yooo, ai shitt
